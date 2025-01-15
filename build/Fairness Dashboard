@@ -1,0 +1,148 @@
+from raiwidgets import FairnessDashboard
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.losses import MeanSquaredError
+from tensorflow.keras.metrics import MeanAbsoluteError
+import pandas as pd
+import numpy as np
+import joblib
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Chunk 2: Load and prepare data
+data = pd.read_csv("/content/imdb_Top_250_TV_Shows.csv")
+
+# Clean the data
+data['Release Year'] = data['Release Year'].str.extract('(\d{4})').astype(float)
+data['Episodes'] = data['Episodes'].str.extract('(\d+)').astype(float)
+data['Rating given by people'] = data['Rating given by people'].str.extract('(\d+\.?\d*)').astype(float)
+
+# Define features, target, and sensitive feature
+feature_columns = ['Release Year', 'Episodes', 'Rating given by people']
+target_column = 'Rating'
+sensitive_column = 'Episodes'  # Using Episodes as sensitive feature
+
+# Prepare data
+X = data[feature_columns]
+y = data[target_column]
+sensitive_features = data[sensitive_column]
+
+# Chunk 3: Split data
+X_train, X_test, y_train, y_test, sensitive_features_train, sensitive_features_test = train_test_split(
+    X, y, sensitive_features, test_size=0.2, random_state=42
+)
+
+# Chunk 4: Scale features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Chunk 5: Create and train model
+model = Sequential([
+    Dense(64, activation='relu', input_shape=(len(feature_columns),)),
+    Dropout(0.2),
+    Dense(32, activation='relu'),
+    Dropout(0.2),
+    Dense(1)
+])
+
+model.compile(
+    optimizer='adam',
+    loss=MeanSquaredError(),
+    metrics=[MeanAbsoluteError()]
+)
+
+history = model.fit(
+    X_train_scaled,
+    y_train,
+    epochs=50,
+    batch_size=32,
+    validation_split=0.2,
+    verbose=1
+)
+
+# Chunk 6: Save model and scaler
+model.save('imdb_model.h5')
+joblib.dump(scaler, 'imdb_scaler.pkl')
+
+# Chunk 7: Get predictions
+y_pred = model.predict(X_test_scaled).flatten()
+
+# Chunk 8: Create Fairness Dashboard
+dashboard = FairnessDashboard(
+    sensitive_features=sensitive_features_test,
+    y_true=y_test.values,
+    y_pred=y_pred
+)
+
+# Chunk 9: Additional Fairness Analysis Functions
+def analyze_fairness_metrics():
+    # Calculate basic fairness metrics
+    predictions_df = pd.DataFrame({
+        'true_values': y_test,
+        'predictions': y_pred,
+        'sensitive_feature': sensitive_features_test
+    })
+
+    # Group by sensitive feature
+    groups = predictions_df.groupby('sensitive_feature')
+
+    # Calculate metrics for each group
+    metrics = {}
+    for name, group in groups:
+        metrics[f'Group_{name}'] = {
+            'mean_error': np.mean(np.abs(group['true_values'] - group['predictions'])),
+            'median_error': np.median(np.abs(group['true_values'] - group['predictions'])),
+            'size': len(group)
+        }
+
+    return metrics
+
+# Chunk 10: Visualization Functions
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def plot_fairness_analysis():
+    plt.figure(figsize=(15, 5))
+
+    # Error Distribution by Sensitive Feature
+    plt.subplot(1, 3, 1)
+    errors = np.abs(y_test - y_pred)
+    sns.boxplot(x=sensitive_features_test, y=errors)
+    plt.title('Error Distribution by Episodes')
+    plt.xlabel('Episodes')
+    plt.ylabel('Absolute Error')
+
+    # Prediction Distribution by Sensitive Feature
+    plt.subplot(1, 3, 2)
+    sns.boxplot(x=sensitive_features_test, y=y_pred)
+    plt.title('Predictions by Episodes')
+    plt.xlabel('Episodes')
+    plt.ylabel('Predicted Rating')
+
+    # Actual vs Predicted with Sensitive Feature Color
+    plt.subplot(1, 3, 3)
+    plt.scatter(y_test, y_pred, c=sensitive_features_test, cmap='viridis', alpha=0.5)
+    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
+    plt.colorbar(label='Episodes')
+    plt.xlabel('Actual Ratings')
+    plt.ylabel('Predicted Ratings')
+    plt.title('Actual vs Predicted by Episodes')
+
+    plt.tight_layout()
+    plt.show()
+
+# Chunk 11: Execute Analysis
+if __name__ == "__main__":
+    print("Fairness Metrics by Group:")
+    fairness_metrics = analyze_fairness_metrics()
+    for group, metrics in fairness_metrics.items():
+        print(f"\n{group}:")
+        for metric, value in metrics.items():
+            print(f"{metric}: {value:.4f}")
+
+    print("\nPlotting Fairness Analysis...")
+    plot_fairness_analysis()
+
+    print("\nLaunching Fairness Dashboard...")
+    dashboard
